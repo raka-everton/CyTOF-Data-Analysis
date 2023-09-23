@@ -6,6 +6,7 @@ library(broom)  # devtools::install_github("tidymodels/broom")
 library(vegan)
 library(RRPP)
 require(pvclust)
+library(Hmisc)
 
 #graphics
 library(cowplot)
@@ -64,18 +65,35 @@ plotPCA <-
       ggtitle(Title) +
       scale_shape_manual(values = c(18, 20)) +
       theme_half_open(12) +
-      ylab(paste("PC", Y, paste0(round(
-        tidy(Data, matrix = "eigenvalues")[Y, 3] * 100
-      ), "%"))) +
-      xlab(paste("PC", X, paste0(round(
-        tidy(Data, matrix = "eigenvalues")[X, 3] * 100
-      ), "%"))) +
       theme(legend.title = element_blank()) +
       geom_point(
         data = DataAug %>% filter(status == "summary") %>% arrange(patient_id),
         size = 4,
         aes(shape = .data[[Shape]],  color = .data[[Colour]])
       )
+    
+    if (class(Data) == "prcomp") {
+      print("4")
+      ggPlot <- ggPlot +
+        ylab(paste("PC", Y, paste0(round(
+          tidy(Data, matrix = "eigenvalues")[Y, 3] * 100
+        ), "%"))) +
+        xlab(paste("PC", X, paste0(round(
+          tidy(Data, matrix = "eigenvalues")[X, 3] * 100
+        ), "%")))
+    }
+    
+    else if (class(Data) == "princmp")
+    {
+      ggPlot <- ggPlot +
+        ylab(paste("PC", Y, paste0(round(
+          Data$vars[Y] / sum(Data$vars) * 100
+        ), "%"))) +
+        xlab(paste("PC", X, paste0(round(
+          Data$vars[X] / sum(Data$vars) * 100
+        ), "%")))
+    }
+    
     
     return(ggPlot)
   }
@@ -366,7 +384,7 @@ PCA <-
            drawVectorChange = TRUE,
            vecChangeArrowPos = 2 / 3,
            graphTitle = "Title",
-           pairsPlot = FALSE,,
+           pairsPlot = FALSE,
            sparse = FALSE,
            statEllipseBy = 'sero',
            shapeBy = 'condition',
@@ -378,14 +396,59 @@ PCA <-
     pcY = paste0(".fittedPC", Y)
     pcZ = paste0(".fittedPC", Z)
     
-    #PCA fit ====
-    pca_fit <- dataVar %>%
-      ungroup() %>%
-      select(where(is.numeric)) %>% # retain only numeric columns
-      prcomp(scale = TRUE) # do PCA on scaled data; data is centered by default.
+    pca_fit = NULL
     
-    #Data Prep ====
-    {
+    #sparse PCA fit ====
+    if (sparse) {
+      dfDataVar <- dataVar %>%
+        ungroup() %>%
+        select(where(is.numeric)) %>% # retain only numeric columns
+        scale() %>%
+        as.data.frame()
+      
+      pca_fit <-
+        princmp(~ .,
+                data = dfDataVar,
+                method = "sparse",
+                sw = TRUE)
+      
+      
+      #Data Prep ====
+      Rotations <- pca_fit$scoef %>%
+        as_tibble(rownames = "column") %>%
+        rename_with(~ (gsub("Comp.", ".fittedPC", .x, fixed = TRUE))) %>% #Renaming for better integration
+        mutate(column = gsub("`", "", column)) %>% #Removing the `` added by princmp to names
+        select(all_of(c("column", pcX, pcY))) %>%
+        filter(column %in% loadingsKey) %>%
+        distinct()
+      
+      allLoadings <- bind_rows(
+        Rotations %>%
+          slice_min(order_by = .[[pcX]], n = loadingsNumber),
+        Rotations %>%
+          slice_max(order_by = .[[pcX]], n = loadingsNumber),
+        Rotations %>%
+          slice_min(order_by = .[[pcY]], n = loadingsNumber),
+        Rotations %>%
+          slice_max(order_by = .[[pcY]], n = loadingsNumber)
+      ) %>% distinct()
+      
+      ggPCAData <-
+        dataVar %>%
+        bind_cols(pca_fit$scores %>% as_tibble()) %>%  # add original dataset back in
+        group_by(across(c(all_of(
+          dataVar %>% group_vars()
+        )))) %>%
+        rename_with(~ (gsub("Comp.", ".fittedPC", .x, fixed = TRUE)))
+    }
+    else{
+      #PCA fit ====
+      pca_fit <- dataVar %>%
+        ungroup() %>%
+        select(where(is.numeric)) %>% # retain only numeric columns
+        prcomp(scale = TRUE) # do PCA on scaled data; data is centered by default.
+      
+      #Data Prep ====
       Rotations <- pca_fit %>%
         tidy(matrix = "rotation") %>%
         pivot_wider(
@@ -415,7 +478,11 @@ PCA <-
         group_by(across(c(
           all_of(dataVar %>% group_vars()), .rownames
         )))
+      
     }
+    
+    
+    
     
     #P6 PCA plotting====
     {
@@ -530,44 +597,47 @@ PCA <-
                subtitle = "_8_Load")
       
       #P5 Variances====
-      featurePercentage <- pca_fit$rotation %>%
-        abs() %>%
-        sweep(2, colSums(.), "/") %>%
-        as_tibble(rownames = "variable") %>%
-        pivot_longer(cols = 2:(length(.)), names_to = "PC") %>%
-        filter(!grepl("^CD|CXCR5|HLA-DR|\\.cell|cluster_id", variable)) %>%
-        filter(PC %in% c(paste0("PC", X),
-                         paste0("PC", Y),
-                         paste0("PC", Z))) %>%
-        #arrange(desc(value)) %>% mutate(variable = factor(variable, levels = variable)) %>%   # This trick update the factor levels
-        ggplot(aes(value * 100, variable)) +
-        geom_col() +
-        xlab(paste0("% Variance explained")) +
-        ylab("") +
-        theme_half_open(12) +
-        facet_wrap2(~ PC)
-      
-      loadingsPercentage <- pca_fit %>%
-        tidy(matrix = "pcs") %>%
-        mutate(percent = percent * 100) %>%
-        mutate(cumulative = cumulative * 100) %>%
-        ggplot(aes(PC, percent)) +
-        geom_col() +
-        #geom_line(aes(PC, cumulative)) +
-        scale_x_continuous("PCs", breaks = c(1:10), limits = c(0, 10)) +
-        ylab("% Variance explained") +
-        theme_half_open(12)
-      
-      savePlot(
-        featurePercentage / loadingsPercentage + plot_annotation(title = paste(
-          ggPCA$labels$title, "variances explained"
-        )),
-        #Possible bug
-        ggPCA$labels$title,
-        background = imageBG,
-        subtitle = "_5_Var"
-      )
-      
+      if (class(pca_fit) == "prcomp") {
+        featurePercentage <- pca_fit$rotation %>%
+          abs() %>%
+          sweep(2, colSums(.), "/") %>%
+          as_tibble(rownames = "variable") %>%
+          pivot_longer(cols = 2:(length(.)), names_to = "PC") %>%
+          filter(!grepl("^CD|CXCR5|HLA-DR|\\.cell|cluster_id", variable)) %>%
+          filter(PC %in% c(paste0("PC", X),
+                           paste0("PC", Y),
+                           paste0("PC", Z))) %>%
+          #arrange(desc(value)) %>% mutate(variable = factor(variable, levels = variable)) %>%   # This trick update the factor levels
+          ggplot(aes(value * 100, variable)) +
+          geom_col() +
+          xlab(paste0("% Variance explained")) +
+          ylab("") +
+          theme_half_open(12) +
+          facet_wrap2( ~ PC)
+        
+        loadingsPercentage <- pca_fit %>%
+          tidy(matrix = "pcs") %>%
+          mutate(percent = percent * 100) %>%
+          mutate(cumulative = cumulative * 100) %>%
+          ggplot(aes(PC, percent)) +
+          geom_col() +
+          #geom_line(aes(PC, cumulative)) +
+          scale_x_continuous("PCs",
+                             breaks = c(1:10),
+                             limits = c(0, 10)) +
+          ylab("% Variance explained") +
+          theme_half_open(12)
+        
+        savePlot(
+          featurePercentage / loadingsPercentage + plot_annotation(title = paste(
+            ggPCA$labels$title, "variances explained"
+          )),
+          #Possible bug
+          ggPCA$labels$title,
+          background = imageBG,
+          subtitle = "_5_Var"
+        )
+      }
       #Calculate vector change coordinates====
       if (drawVectorChange) {
         {
@@ -702,7 +772,7 @@ PCA <-
         stat_summary(fun.data = mean_se, geom = "errorbar") +
         geom_point(position = "jitter", aes(color = patient_id)) +
         ggtitle(graphTitle) +
-        facet_wrap2(~ variable)
+        facet_wrap2( ~ variable)
       
       savePlot(
         ggPairwise,
@@ -714,30 +784,30 @@ PCA <-
     }
     
     #P11 Hierarchical clustering ====
-   if(performCluster){
-     png(
-      filename = paste0(ggPCA$labels$title, "_10_HeirClus.png"),
-      width = 6,
-      height = 5,
-      units = "in",
-      res = 800
-    )
-    ggHClust <- ggPCAData %>%
-      ungroup() %>%
-      mutate(.rownames = paste(sample_id, " ", sero)) %>%
-      filter(status == "summary") %>%
-      select(.rownames | all_of(starts_with(".fitted"))) %>%
-      column_to_rownames(var = ".rownames") %>%
-      t() %>%
-      as.matrix() %>%
-      pvclust::pvclust(
-        method.hclust = "complete",
-        method.dist = "correlation",
-        nboot = 1000,
-        parallel = TRUE
-      ) %>% plot()
-    dev.off()
-   }
+    if (performCluster) {
+      png(
+        filename = paste0(ggPCA$labels$title, "_10_HeirClus.png"),
+        width = 6,
+        height = 5,
+        units = "in",
+        res = 800
+      )
+      ggHClust <- ggPCAData %>%
+        ungroup() %>%
+        mutate(.rownames = paste(sample_id, " ", sero)) %>%
+        filter(status == "summary") %>%
+        select(.rownames | all_of(starts_with(".fitted"))) %>%
+        column_to_rownames(var = ".rownames") %>%
+        t() %>%
+        as.matrix() %>%
+        pvclust::pvclust(
+          method.hclust = "complete",
+          method.dist = "correlation",
+          nboot = 1000,
+          parallel = TRUE
+        ) %>% plot()
+      dev.off()
+    }
     
   }
 
@@ -767,7 +837,7 @@ performStats <- function(dataVar, permutations = 1, title) {
   
   rrppModelFitTypeIII <-
     lm.rrpp(
-      distances ~ condition*metacluster_id,
+      distances ~ condition * metacluster_id,
       data = rrppSummaryData,
       iter = 1,
       SS.type = "III"
@@ -836,7 +906,8 @@ performPCA <-
             drawVecChange = TRUE,
             labIndividuals = FALSE,
             elipIndividuals = TRUE,
-            componentPlot = TRUE) {
+            componentPlot = TRUE,
+            sparsePCA = TRUE) {
     print("Preprocessing....")
     
     StainingKeyType <-
@@ -863,7 +934,8 @@ performPCA <-
       pairsPlot = FALSE,
       genMultiANOVA = FALSE,
       perIndividualEllipse = FALSE,
-      performCluster = FALSE
+      performCluster = FALSE,
+      sparse = sparsePCA
     )
     
     print("CD8s....")
@@ -876,73 +948,79 @@ performPCA <-
       drawVectorChange = drawVecChange,
       labelIndividuals = labIndividuals,
       pairsPlot = componentPlot,
-      perIndividualEllipse = elipIndividuals
+      perIndividualEllipse = elipIndividuals,
+      sparse = sparsePCA
     )
     
-    print("CD4s....")
-    PCA(
-      subset(dataVar, metacluster_id == 'CD4 T cell'),
-      X = PC_X,
-      Y = PC_Y,
-      loadingsKey = StainingKeyState,
-      graphTitle = paste(prefix, "CD4 T Cell"),
-      drawVectorChange = drawVecChange,
-      labelIndividuals = labIndividuals,
-      pairsPlot = componentPlot,
-      perIndividualEllipse = elipIndividuals
-    )
-    
-    print("Bs....")
-    PCA(
-      subset(dataVar, metacluster_id == 'B cells'),
-      X = PC_X,
-      Y = PC_Y,
-      loadingsKey = StainingKeyState,
-      graphTitle = paste(prefix, "B Cell"),
-      drawVectorChange = drawVecChange,
-      labelIndividuals = labIndividuals,
-      pairsPlot = componentPlot,
-      perIndividualEllipse = elipIndividuals
-    )
-    
-    print("Monocytes....")
-    PCA(
-      subset(dataVar, metacluster_id == 'Monocytes'),
-      X = PC_X,
-      Y = PC_Y,
-      loadingsKey = StainingKeyState,
-      graphTitle = paste(prefix, "Monocytes"),
-      drawVectorChange = drawVecChange,
-      labelIndividuals = labIndividuals,
-      pairsPlot = componentPlot,
-      perIndividualEllipse = elipIndividuals
-    )
-    
-    print("pDCs....")
-    PCA(
-      subset(dataVar, metacluster_id == 'pDCs'),
-      X = PC_X,
-      Y = PC_Y,
-      loadingsKey = StainingKeyState,
-      graphTitle = paste(prefix, "pDCs"),
-      drawVectorChange = drawVecChange,
-      labelIndividuals = labIndividuals,
-      pairsPlot = componentPlot,
-      perIndividualEllipse = elipIndividuals
-    )
-    
-    print("NKs....")
-    PCA(
-      subset(dataVar, metacluster_id == 'NK Cells'),
-      X = PC_X,
-      Y = PC_Y,
-      loadingsKey = StainingKeyState,
-      graphTitle = paste(prefix, "NK Cells"),
-      drawVectorChange = drawVecChange,
-      labelIndividuals = labIndividuals,
-      pairsPlot = componentPlot,
-      perIndividualEllipse = elipIndividuals
-    )
+    # print("CD4s....")
+    # PCA(
+    #   subset(dataVar, metacluster_id == 'CD4 T cell'),
+    #   X = PC_X,
+    #   Y = PC_Y,
+    #   loadingsKey = StainingKeyState,
+    #   graphTitle = paste(prefix, "CD4 T Cell"),
+    #   drawVectorChange = drawVecChange,
+    #   labelIndividuals = labIndividuals,
+    #   pairsPlot = componentPlot,
+    #   perIndividualEllipse = elipIndividuals,
+    #   sparse = sparsePCA
+    # )
+    #
+    # print("Bs....")
+    # PCA(
+    #   subset(dataVar, metacluster_id == 'B cells'),
+    #   X = PC_X,
+    #   Y = PC_Y,
+    #   loadingsKey = StainingKeyState,
+    #   graphTitle = paste(prefix, "B Cell"),
+    #   drawVectorChange = drawVecChange,
+    #   labelIndividuals = labIndividuals,
+    #   pairsPlot = componentPlot,
+    #   perIndividualEllipse = elipIndividuals,
+    #   sparse = sparsePCA
+    # )
+    #
+    # print("Monocytes....")
+    # PCA(
+    #   subset(dataVar, metacluster_id == 'Monocytes'),
+    #   X = PC_X,
+    #   Y = PC_Y,
+    #   loadingsKey = StainingKeyState,
+    #   graphTitle = paste(prefix, "Monocytes"),
+    #   drawVectorChange = drawVecChange,
+    #   labelIndividuals = labIndividuals,
+    #   pairsPlot = componentPlot,
+    #   perIndividualEllipse = elipIndividuals,
+    #   sparse = sparsePCA
+    # )
+    #
+    # print("pDCs....")
+    # PCA(
+    #   subset(dataVar, metacluster_id == 'pDCs'),
+    #   X = PC_X,
+    #   Y = PC_Y,
+    #   loadingsKey = StainingKeyState,
+    #   graphTitle = paste(prefix, "pDCs"),
+    #   drawVectorChange = drawVecChange,
+    #   labelIndividuals = labIndividuals,
+    #   pairsPlot = componentPlot,
+    #   perIndividualEllipse = elipIndividuals,
+    #   sparse = sparsePCA
+    # )
+    #
+    # print("NKs....")
+    # PCA(
+    #   subset(dataVar, metacluster_id == 'NK Cells'),
+    #   X = PC_X,
+    #   Y = PC_Y,
+    #   loadingsKey = StainingKeyState,
+    #   graphTitle = paste(prefix, "NK Cells"),
+    #   drawVectorChange = drawVecChange,
+    #   labelIndividuals = labIndividuals,
+    #   pairsPlot = componentPlot,
+    #   perIndividualEllipse = elipIndividuals,
+    #   sparse = sparsePCA
+    # )
     
     #Luisa's vars
     # print("Misc....")
@@ -955,7 +1033,8 @@ performPCA <-
     #   drawVectorChange = drawVecChange,
     #   labelIndividuals = labIndividuals,
     #   pairsPlot = componentPlot,
-    #   perIndividualEllipse = elipIndividuals
+    #   perIndividualEllipse = elipIndividuals,
+    #   sparse = sparsePCA
     # )
     
     #Adam's vars
@@ -990,15 +1069,16 @@ performPCA <-
 
 #Run wrapper====
 performPCA(
-  allData_CleanR %>%
+  allData_Clean %>%
     group_by(status, sample_id, condition, sero, patient_id, metacluster_id) %>%
-    filter(patient_id != "LV081"), #%>% select(which(!grepl("^CD|CXCR5|HLA-DR", names(.)))),
-      prefix = "Rg",
-      PC_X = 1,
-      PC_Y = 2,
-      drawVecChange = TRUE,
-      labIndividuals = FALSE,
-      componentPlot = FALSE,
-      elipIndividuals = TRUE
-    )
-  
+    filter(patient_id != "LV081"),
+  #%>% select(which(!grepl("^CD|CXCR5|HLA-DR", names(.)))),
+  prefix = "Sparse",
+  PC_X = 1,
+  PC_Y = 2,
+  drawVecChange = TRUE,
+  labIndividuals = FALSE,
+  componentPlot = FALSE,
+  elipIndividuals = TRUE,
+  sparsePCA = TRUE
+)
