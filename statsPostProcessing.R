@@ -1,12 +1,15 @@
 #V2
 
 library(tidyverse)
-library(summarytools) #Not sure still using this?
+#library(summarytools) #Not sure still using this?
 library(broom)  # devtools::install_github("tidymodels/broom")
 library(vegan)
 library(RRPP)
 require(pvclust)
 library(Hmisc)
+
+library(foreach) #For bootstrapping
+#library(tictoc) #Not sure if still needed
 
 #graphics
 library(cowplot)
@@ -20,13 +23,13 @@ library(kableExtra)
 
 set.seed(28738)
 
-setwd(
-  "C:/Users/prade/OneDrive - The University of Liverpool/Obsidian/Liverpool/ARDAT/WP1 Mechanistic understanding of innate immune response to AAV/PH009/A1/Manually Debarcoded_PHOnly/Test2"
-)
-
 # setwd(
-#   "C:/Users/prade/OneDrive - The University of Liverpool/Obsidian/Liverpool/ARDAT/WP1 Mechanistic understanding of innate immune response to AAV/PH009/A1/Manually Debarcoded_LHOnly/Boots/"
+#   "C:/Users/prade/OneDrive - The University of Liverpool/Obsidian/Liverpool/ARDAT/WP1 Mechanistic understanding of innate immune response to AAV/PH009/A1/Manually Debarcoded_PHOnly/Test2"
 # )
+
+setwd(
+  "C:/Users/prade/OneDrive - The University of Liverpool/Obsidian/Liverpool/ARDAT/WP1 Mechanistic understanding of innate immune response to AAV/PH009/A1/Manually Debarcoded_LHOnly/MeansBootstrap"
+)
 
 # setwd("C:/Users/prade/OneDrive - The University of Liverpool/Obsidian/Liverpool/ARDAT/WP1 Mechanistic understanding of innate immune response to AAV/PH009/Adam Lister/manually debarcoded")
 
@@ -195,86 +198,74 @@ dataCleanup <- function(tblColumn) {
 #   add_column(grp_id = group_indices(.), .before = ".cell")
 #
 #Bootstrapping====
-# splitData <- groupData %>% ungroup() %>% nest(.by = grp_id)
-#
-# {
-#   summaryStats = NULL
-#   cellDistribution = NULL
-#   clusterDistribution = NULL
-#
-#   nGroups = length(splitData[[1]])
-#   J = 500 # no of bootstrap repeats
-#   I <- nGroups
-# }
-#
-# rm(allData, groupData)
-# gc(full = TRUE)
-#
-# performBootstrap <- function(I) {
-#   for (i in I)
-#   {
-#     N = length(splitData[[2]][[i]][[1]])
-#
-#     temp <-
-#       splitData[[2]][[i]] %>%
-#       group_by(condition, metacluster_id, patient_id, sero, sample_id)
-#
-#     groupTime <- Sys.time()
-#     print("========================")
-#     print(paste("Group ", i, "of ", nGroups))
-#     print(paste("Sampling/Replacing ", N, "cells"))
-#     print("========================")
-#
-#     summaryStats = NULL
-#     cellDistribution = NULL
-#     clusterDistribution = NULL
-#
-#     for (j in 1:J) {
-#       temp <- temp %>%
-#         slice_sample(n = N, replace = TRUE) %>%
-#         ungroup()
-#
-#       #temp %>%
-#       #select(1:7) %>% mutate(bootstrap = j) %>% bind_rows(cellDistribution, .) -> cellDistribution
-#
-#       temp %>%
-#         select(!c(.cell, cluster_id)) %>%
-#         summarise(across(where(is.character), unique),
-#                   #across(where(is.numeric), ~ dataCleanup(.)  %>% median(na.rm = TRUE))) %>%
-#                   across(where(is.numeric), median)) %>%
-#         mutate(bootstrap = j) %>%
-#         bind_rows(summaryStats, .) -> summaryStats
-#
-#       print(paste("Bootstrap ", j , "of ", J, "; of group ", i, "of ", nGroups))
-#
-#     }
-#
-#     # write_csv(
-#     #   cellDistribution,
-#     #   file = paste("CellDistributions_", temp[[2]][[1]], ".csv"),
-#     #   append = TRUE
-#     # )
-#     write_csv(
-#       summaryStats,
-#       file = paste("Medians_", temp[[2]][[1]], "_", temp[[7]][[1]], ".csv"),
-#       append = FALSE
-#     )
-#
-#     rm(summaryStats)
-#     rm(cellDistribution)
-#     gc(verbose = TRUE, full = TRUE)
-#
-#   }
-# }
-#
+performBootstrap <-
+  function(splitData, I = i, J = 500) {
+    #I = iteration, J = no of bootstraps
+    summaryStats = NULL
+    for (j in 1:J) {
+      temp <- splitData[[2]][[i]] %>%
+        group_by(condition, metacluster_id, patient_id, sero, sample_id) %>%
+        slice_sample(prop = 1, replace = TRUE) %>%
+        ungroup()
+      message(paste("Bootstrap", j))
+      #temp %>%
+      #select(1:7) %>% mutate(bootstrap = j) %>% bind_rows(cellDistribution, .) -> cellDistribution
+      
+      temp %>%
+        select(!c(.cell, cluster_id)) %>%
+        summarise(across(where(is.character), unique),
+                  #across(where(is.numeric), ~ dataCleanup(.)  %>% median(na.rm = TRUE))) %>%
+                  across(where(is.numeric), mean)) %>%
+        mutate(bootstrap = j) %>%
+        bind_rows(summaryStats, .) -> summaryStats
+      
+      print(paste("Bootstrap ", j , "of ", J, "; of group ", i, "of 72"))
+      
+    }
+    
+    # write_csv(
+    #   cellDistribution,
+    #   file = paste("CellDistributions_", temp[[2]][[1]], ".csv"),
+    #   append = TRUE
+    # )
+    
+    write_csv(summaryStats,
+              file = paste("Means_", i, ".csv"),
+              append = TRUE)
+    
+    rm(summaryStats)
+    rm(cellDistribution)
+    gc(verbose = TRUE, full = TRUE) #Clear memory
+    
+  }
 
-# hist(table(
-#   cellDistribution %>% filter(sample_id == "LV172_UT_HS", metacluster_id == "pDCs") %>% .$.cell
-# ))
+##Execute====
+groupData <- allData %>%
+  group_by(condition, metacluster_id, patient_id, sero, sample_id) %>%
+  add_column(grp_id = group_indices(.), .before = ".cell")
 
+splitData <- groupData %>% ungroup() %>% nest(.by = grp_id)
+
+rm(allData, groupData) # Clear memory, and ensure only splitData remains.
+gc(full = TRUE)
+
+nGroups <- length(splitData[[1]])
+
+cl <- parallel::makeCluster(14, type = "PSOCK") #Adjust no of cores here.
+doParallel::registerDoParallel(cl)
+
+foreach(
+  i = 1:nGroups,
+  .packages = c("tidyverse"),
+  .combine = 'c') %dopar% {
+  performBootstrap(splitData, I = i, J = 2000)
+}
+parallel::stopCluster(cl)
+
+##Concat outputs====
 bootData = tibble()
 chrCSVList <-
-  list.files(getwd(), pattern = "^(Meanss).*\\.csv$")
+  list.files(getwd(), pattern = "^(Means).*\\.csv$")
 
 for (i in 1:length(chrCSVList))
 {
@@ -330,8 +321,7 @@ colnames(bootData) <-
 write_csv(bootData, "Means_Compiled.csv")
 
 
-# rm(i, chrCSVList)
-#}
+rm(i, chrCSVList)
 
 #Read files====
 # {
@@ -367,12 +357,12 @@ allData_CleanR <- allData_Clean %>%
 #Testing vars====
 dataVar <-
   allData_Clean %>% group_by(status,
-                                 sample_id,
-                                 condition,
-                                 sero,
-                                 patient_id,
-                                 metacluster_id) %>% filter(sero != "AAV2" &
-                                                              metacluster_id == "Monocytes")
+                             sample_id,
+                             condition,
+                             sero,
+                             patient_id,
+                             metacluster_id) %>% filter(sero != "AAV2" &
+                                                          metacluster_id == "Monocytes")
 
 loadingsKey = StainingKey %>% filter(marker_class == "state") %>%
   select(-c(fcs_colname, marker_class)) %>%
@@ -435,19 +425,19 @@ PCA <-
         as.data.frame()
       
       pca_fit <-
-        princmp(~ .,
-                data = dfDataVar,
-                method = "sparse",
-                sw = TRUE)
+        princmp( ~ .,
+                 data = dfDataVar,
+                 method = "sparse",
+                 sw = TRUE)
       
       ##Data Prep ====
       Rotations <- pca_fit$scoef %>%
         as_tibble(rownames = "column") %>%
-        rename_with(~ (gsub("Comp.", ".fittedPC", .x, fixed = TRUE))) %>% #Renaming for better integration
+        rename_with( ~ (gsub("Comp.", ".fittedPC", .x, fixed = TRUE))) %>% #Renaming for better integration
         mutate(column = gsub("`", "", column)) %>% #Removing the `` added by princmp to names
         select(all_of(c("column", pcX, pcY))) %>%
         #filter(column %in% loadingsKey) %>%
-        filter(!grepl("^CD|CXCR5|HLA-DR", column)) %>% 
+        filter(!grepl("^CD|CXCR5|HLA-DR", column)) %>%
         distinct()
       
       allLoadings <- bind_rows(
@@ -467,7 +457,7 @@ PCA <-
         group_by(across(c(all_of(
           dataVar %>% group_vars()
         )))) %>%
-        rename_with(~ (gsub("Comp.", ".fittedPC", .x, fixed = TRUE)))
+        rename_with( ~ (gsub("Comp.", ".fittedPC", .x, fixed = TRUE)))
       
     }
     else{
@@ -487,7 +477,7 @@ PCA <-
         ) %>%
         select(c(column, pcX, pcY)) %>%
         #filter(column %in% loadingsKey) %>%
-        filter(!grepl("^CD|CXCR5|HLA-DR", column)) %>% 
+        filter(!grepl("^CD|CXCR5|HLA-DR", column)) %>%
         distinct()
       
       allLoadings <- bind_rows(
@@ -514,12 +504,12 @@ PCA <-
     
     
     
-    #P6 PCA plotting====
+    ##P6 PCA plotting====
     {
       ggPCA <-
         plotPCA(pca_fit, ggPCAData, X, Y, graphTitle, shapeBy, colorBy)
       
-      #P7 Components plotting====
+      ##P7 Components plotting====
       if (genComponentPlots)
       {
         ggPCA0 <-
@@ -558,7 +548,7 @@ PCA <-
             show.legend = FALSE
           )
       }
-      #Per donor ellipse====
+      ##Per donor ellipse====
       if (perIndividualEllipse) {
         ggPCA <-
           ggPCA + stat_ellipse(
@@ -590,7 +580,7 @@ PCA <-
                background = imageBG,
                subtitle = "_6_Raw")
       
-      #P8 Biplot====
+      ##P8 Biplot====
       internalMultiple = min(min(abs(layer_scales(ggPCA)$x$range$range)) / max(abs(allLoadings[[pcX]])),
                              min(abs(layer_scales(ggPCA)$y$range$range)) / max(abs(allLoadings[[pcY]])))
       
@@ -626,7 +616,7 @@ PCA <-
                background = imageBG,
                subtitle = "_8_Load")
       
-      #P5 Variances====
+      ##P5 Variances====
       if (class(pca_fit) == "prcomp") {
         featurePercentage <- pca_fit$rotation %>%
           abs() %>%
@@ -645,7 +635,7 @@ PCA <-
           xlab(paste0("% Variance explained")) +
           ylab("") +
           theme_half_open(12) +
-          facet_wrap2( ~ PC)
+          facet_wrap2(~ PC)
         
         loadingsPercentage <- pca_fit %>%
           tidy(matrix = "pcs") %>%
@@ -692,7 +682,7 @@ PCA <-
           xlab(paste0("% Variance explained")) +
           ylab("") +
           theme_half_open(12) +
-          facet_wrap2( ~ PC)
+          facet_wrap2(~ PC)
         
         loadingsPercentage <- pca_fit$vars %>%
           as_tibble(rownames = "PC") %>%
@@ -718,7 +708,7 @@ PCA <-
           subtitle = "_5_Var"
         )
       }
-      #Calculate vector change coordinates====
+      ##Calculate vector change coordinates====
       if (drawVectorChange) {
         {
           temp <- ggPCAData %>%
@@ -752,7 +742,7 @@ PCA <-
         vecChange <-
           vecChange %>% fVectorChangeArrowPos(vecChangeArrowPos)
         
-        #P1 Vector change====
+        ##P1 Vector change====
         ggPCAV <- plotVecChange(ggPCA,
                                 vecChange,
                                 "vc_x",
@@ -770,7 +760,7 @@ PCA <-
                                  "vc_y",
                                  Colour = colorBy)
         
-        #P2 Vector Load change====
+        ##P2 Vector Load change====
         savePlot(ggPCALV,
                  ggPCA$labels$title,
                  background = imageBG,
@@ -800,7 +790,7 @@ PCA <-
             ggPCA0Vec + (ggPCA1Vec / ggPCA2Vec) + plot_annotation(tag_levels = c('A', '1'), tag_sep = '.') + plot_layout(widths = c(2, 1), guides = 'collect') &
             theme(legend.position = "bottom", legend.box = "horizontal")
           
-          #P3 Components Vec====
+          ##P3 Components Vec====
           savePlot(
             ggComponentsVec,
             ggPCA$labels$title,
@@ -812,7 +802,7 @@ PCA <-
         
       }
       
-      #P9,10 Pairs plot====
+      ##P9,10 Pairs plot====
       if (pairsPlot) {
         #Pairs plot
         ggPairsSero <- ggpairs(ggPCAData,
@@ -833,7 +823,7 @@ PCA <-
       }
     }
     
-    #P4 Univariate graphs====
+    ##P4 Univariate graphs====
     {
       tblDataLong <-
         pivot_longer(
@@ -852,7 +842,7 @@ PCA <-
         stat_summary(fun.data = mean_se, geom = "errorbar") +
         geom_point(position = "jitter", aes(color = patient_id)) +
         ggtitle(graphTitle) +
-        facet_wrap2( ~ variable)
+        facet_wrap2(~ variable)
       
       savePlot(
         ggPairwise,
@@ -863,7 +853,7 @@ PCA <-
       )
     }
     
-    #P11 Hierarchical clustering ====
+    ##P11 Hierarchical clustering ====
     if (performCluster) {
       png(
         filename = paste0(ggPCA$labels$title, "_10_HeirClus.png"),
@@ -889,7 +879,7 @@ PCA <-
       dev.off()
     }
     
-    #Sparse exports====
+    ##Sparse exports====
     if (sparse) {
       sPCAR2 <- tibble(Feature = map(pca_fit$sw[1:3], as.list)) %>%
         unnest_wider(Feature, names_sep = "") %>%
@@ -906,8 +896,9 @@ PCA <-
     }
     
   }
+#End Main================
 
-# #Multivariate ANOVA====
+#Multivariate ANOVA====
 dataVar <- summaryData_Clean %>%
   filter(sero != "AAV2") %>%   #select(which(!grepl("^CD|CXCR5|HLA-DR", names(.)))) %>%
   ungroup()
@@ -1119,19 +1110,19 @@ performPCA <-
     )
     
     #Luisa's vars
-    # print("Misc....")
-    # PCA(
-    #   subset(dataVar, metacluster_id == 'Misc'),
-    #   X = PC_X,
-    #   Y = PC_Y,
-    #   loadingsKey = StainingKeyState,
-    #   graphTitle = paste(prefix, "Misc"),
-    #   drawVectorChange = drawVecChange,
-    #   labelIndividuals = labIndividuals,
-    #   pairsPlot = componentPlot,
-    #   perIndividualEllipse = elipIndividuals,
-    #   sparse = sparsePCA
-    # )
+    print("Misc....")
+    PCA(
+      subset(dataVar, metacluster_id == 'Misc'),
+      X = PC_X,
+      Y = PC_Y,
+      loadingsKey = StainingKeyState,
+      graphTitle = paste(prefix, "Misc"),
+      drawVectorChange = drawVecChange,
+      labelIndividuals = labIndividuals,
+      pairsPlot = componentPlot,
+      perIndividualEllipse = elipIndividuals,
+      sparse = sparsePCA
+    )
     
     #Adam's vars
     # print("NK Ts....")
@@ -1170,7 +1161,7 @@ performPCA(
     filter(patient_id != "LV081"),
   # %>%
   #select(which(!grepl("^CD|CXCR5|HLA-DR", names(.)))),
-  prefix = "Boot 2k",
+  prefix = "Boots 2k",
   PC_X = 1,
   PC_Y = 2,
   drawVecChange = TRUE,
